@@ -1,0 +1,70 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #bfd6e8;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+#app canvas {
+  display: block;
+}
+
+#loading {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  color: #1d2b36;
+  background: #bfd6e8;
+}
+
+#hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  max-width: calc(100vw - 48px);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(18, 24, 32, 0.84);
+  color: #e6edf3;
+  font-size: 12px;
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+
+#hud .controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+#hud button {
+  padding: 4px 8px;
+  border: 1px solid #3a4656;
+  border-radius: 6px;
+  background: #2a3442;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#hud button.active {
+  border-color: #5b95e6;
+  background: #3d7dd8;
+}
+
+#hud pre {
+  margin: 8px 0 0;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+#hud .help {
+  margin-top: 6px;
+  color: #9fb0c0;
+  font-size: 11px;
+}
