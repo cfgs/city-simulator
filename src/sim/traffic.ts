@@ -8,35 +8,41 @@ export const STUCK_TIME = 60;
 const COST_SMOOTHING = 0.3;
 const MAX_LANES = 8;
 
+const VehState = { Idle: 0, Waiting: 1, Driving: 2 } as const;
+
 /**
  * Mesoskopisk köbaserad trafikmodell (samma princip som MATSim:s kösimulering).
  *
  * Varje vägkant är en FIFO-kö. Ett fordon som kör in på en kant kan lämna den tidigast
  * efter kantens fria restid, och bara om (1) kanten släpper ut tillräckligt många fordon
  * per sekund och (2) nästa kant har plats. Det ger köer, flaskhalsar och köer som växer
- * bakåt genom korsningar – utan att simulera varje bils rörelse. Exakta positioner räknas
- * bara ut i snapshoten, och renderingen ritar bara de fordon som syns.
+ * bakåt genom korsningar – utan att simulera varje bils rörelse. Vägens form spelar ingen
+ * roll här, bara längd, körfält och hastighet. Exakta positioner räknas bara ut i
+ * snapshoten, och renderingen ritar bara de fordon som syns.
  *
- * Fordon indexeras med samma id som invånaren som kör.
+ * Fordon indexeras med samma id som invånaren som kör. Nod- och kantindex är täta index
+ * i den aktuella grafen och räknas om i remap() när vägnätet ändras.
  */
 export class Traffic {
   // Per fordon
+  private vehState = new Uint8Array(0);
+  private vehEdge = new Int32Array(0);
   /** Startkorsning för fordon som väntar på att köra ut. */
-  private readonly vehNode: Int32Array;
-  private readonly vehDest: Int32Array;
-  /** Nästa fordon i samma kö (länkad lista), -1 sist. */
-  private readonly vehNext: Int32Array;
+  private vehNode = new Int32Array(0);
+  private vehDest = new Int32Array(0);
+  /** Nästa fordon i samma kö (länkad lista), −1 sist. */
+  private vehNext = new Int32Array(0);
   /** När fordonet körde in på kanten (eller började vänta på att köra ut). */
-  private readonly vehEnter: Float64Array;
+  private vehEnter = new Float64Array(0);
   /** Tidigaste tid fordonet kan lämna kanten. */
-  private readonly vehExit: Float64Array;
-  private readonly vehDepart: Float64Array;
+  private vehExit = new Float64Array(0);
+  private vehDepart = new Float64Array(0);
 
   // Per kant
-  private readonly head: Int32Array;
-  private readonly tail: Int32Array;
-  readonly count: Int32Array;
-  private readonly flowAccum: Float32Array;
+  private head: Int32Array;
+  private tail: Int32Array;
+  count: Int32Array;
+  private flowAccum: Float32Array;
 
   private pending: number[] = [];
   private readonly laneAhead = new Int32Array(MAX_LANES);
@@ -47,16 +53,11 @@ export class Traffic {
   avgTripTime = 0;
 
   constructor(
-    private readonly graph: RoadGraph,
+    private graph: RoadGraph,
     private readonly router: Router,
-    vehicleCount: number,
+    vehicleCapacity: number,
   ) {
-    this.vehNode = new Int32Array(vehicleCount);
-    this.vehDest = new Int32Array(vehicleCount);
-    this.vehNext = new Int32Array(vehicleCount).fill(-1);
-    this.vehEnter = new Float64Array(vehicleCount);
-    this.vehExit = new Float64Array(vehicleCount);
-    this.vehDepart = new Float64Array(vehicleCount);
+    this.ensureVehicles(vehicleCapacity);
     const E = graph.edgeCount;
     this.head = new Int32Array(E).fill(-1);
     this.tail = new Int32Array(E).fill(-1);
@@ -69,6 +70,27 @@ export class Traffic {
     return this.pending.length;
   }
 
+  /** Ser till att det finns plats för fordon med id upp till `capacity` − 1. */
+  ensureVehicles(capacity: number): void {
+    const old = this.vehState.length;
+    if (capacity <= old) return;
+    const n = Math.max(capacity, old * 2, 1024);
+    const grow = <T extends Int32Array | Float64Array | Uint8Array>(a: T, fill?: number): T => {
+      const b = new (a.constructor as new (n: number) => T)(n);
+      if (fill !== undefined) b.fill(fill);
+      b.set(a);
+      return b;
+    };
+    this.vehState = grow(this.vehState);
+    this.vehEdge = grow(this.vehEdge, -1);
+    this.vehNode = grow(this.vehNode);
+    this.vehDest = grow(this.vehDest);
+    this.vehNext = grow(this.vehNext, -1);
+    this.vehEnter = grow(this.vehEnter);
+    this.vehExit = grow(this.vehExit);
+    this.vehDepart = grow(this.vehDepart);
+  }
+
   /** Startar en bilresa. Returnerar false om det inte finns någon väg. */
   depart(v: number, origin: number, dest: number, now: number): boolean {
     this.vehDepart[v] = now;
@@ -77,11 +99,24 @@ export class Traffic {
       return true;
     }
     if (this.router.nextEdge(dest, origin) < 0) return false;
+    this.vehState[v] = VehState.Waiting;
     this.vehNode[v] = origin;
     this.vehDest[v] = dest;
     this.vehEnter[v] = now;
     this.pending.push(v);
     return true;
+  }
+
+  /** Avbryter en pågående bilresa (t.ex. när invånaren flyttar). */
+  cancel(v: number): void {
+    if (this.vehState[v] === VehState.Waiting) {
+      const i = this.pending.indexOf(v);
+      if (i >= 0) this.pending.splice(i, 1);
+    } else if (this.vehState[v] === VehState.Driving) {
+      this.unlink(v);
+      this.onRoad--;
+    }
+    this.vehState[v] = VehState.Idle;
   }
 
   step(now: number, dt: number): void {
@@ -96,12 +131,13 @@ export class Traffic {
         if (v === -1 || vehExit[v] > now) break;
         const node = edgeTo[e];
         const dest = vehDest[v];
-        const next = node === dest ? -1 : this.router.nextEdge(dest, node);
+        const next = dest < 0 || node === dest ? -1 : this.router.nextEdge(dest, node);
         if (next >= 0 && count[next] >= edgeStorage[next] && now - vehExit[v] < STUCK_TIME) break;
         this.dequeue(e);
         acc -= 1;
         if (next < 0) {
           this.onRoad--;
+          this.vehState[v] = VehState.Idle;
           this.finish(v, now);
         } else {
           this.enqueue(next, v, now);
@@ -111,6 +147,76 @@ export class Traffic {
     }
 
     this.admitPending(now);
+  }
+
+  /**
+   * Flyttar över alla köer till en ny graf efter att vägnätet ändrats. Bilar på vägar som
+   * finns kvar står kvar i sina köer. Bilar på borttagna vägar får köra ut igen från
+   * korsningen de kom ifrån – eller räknas som framme om den också är borta.
+   */
+  remap(next: RoadGraph, now: number): void {
+    const prev = this.graph;
+    const E = next.edgeCount;
+    const head = new Int32Array(E).fill(-1);
+    const tail = new Int32Array(E).fill(-1);
+    const count = new Int32Array(E);
+    const flow = new Float32Array(E);
+    const mapNode = (dense: number): number => {
+      if (dense < 0) return -1;
+      const stable = prev.nodeStable[dense];
+      return stable < next.denseNode.length ? next.denseNode[stable] : -1;
+    };
+
+    for (let v = 0; v < this.vehState.length; v++) {
+      if (this.vehState[v] === VehState.Idle) continue;
+      this.vehDest[v] = mapNode(this.vehDest[v]);
+      if (this.vehState[v] === VehState.Waiting) this.vehNode[v] = mapNode(this.vehNode[v]);
+    }
+
+    for (let e = 0; e < prev.edgeCount; e++) {
+      if (this.head[e] === -1) continue;
+      const stableSeg = prev.segStable[e >> 1];
+      const k = stableSeg < next.denseSeg.length ? next.denseSeg[stableSeg] : -1;
+      if (k >= 0) {
+        const e2 = 2 * k + (e & 1);
+        head[e2] = this.head[e];
+        tail[e2] = this.tail[e];
+        count[e2] = this.count[e];
+        flow[e2] = this.flowAccum[e];
+        for (let v = head[e2]; v !== -1; v = this.vehNext[v]) this.vehEdge[v] = e2;
+        continue;
+      }
+      const from = mapNode(prev.edgeFrom[e]);
+      for (let v = this.head[e]; v !== -1; ) {
+        const after = this.vehNext[v];
+        this.vehNext[v] = -1;
+        this.vehEdge[v] = -1;
+        this.onRoad--;
+        if (from >= 0 && this.vehDest[v] >= 0) {
+          this.vehState[v] = VehState.Waiting;
+          this.vehNode[v] = from;
+          this.vehEnter[v] = now;
+          this.pending.push(v);
+        } else {
+          this.vehState[v] = VehState.Idle;
+          this.finish(v, now);
+        }
+        v = after;
+      }
+    }
+
+    this.pending = this.pending.filter((v) => {
+      if (this.vehNode[v] >= 0 && this.vehDest[v] >= 0) return true;
+      this.vehState[v] = VehState.Idle;
+      this.finish(v, now);
+      return false;
+    });
+
+    this.graph = next;
+    this.head = head;
+    this.tail = tail;
+    this.count = count;
+    this.flowAccum = flow;
   }
 
   /** Uppdaterar vägvalets kantkostnader från aktuella köer. */
@@ -167,6 +273,7 @@ export class Traffic {
       const v = pending[i];
       const e = this.router.nextEdge(this.vehDest[v], this.vehNode[v]);
       if (e < 0) {
+        this.vehState[v] = VehState.Idle;
         this.finish(v, now);
       } else if (this.count[e] < edgeStorage[e] || now - this.vehEnter[v] >= STUCK_TIME) {
         this.enqueue(e, v, now);
@@ -179,6 +286,8 @@ export class Traffic {
   }
 
   private enqueue(e: number, v: number, now: number): void {
+    this.vehState[v] = VehState.Driving;
+    this.vehEdge[v] = e;
     this.vehEnter[v] = now;
     this.vehExit[v] = now + this.graph.edgeFreeTime[e];
     this.vehNext[v] = -1;
@@ -194,6 +303,24 @@ export class Traffic {
     this.head[e] = this.vehNext[v];
     if (this.head[e] === -1) this.tail[e] = -1;
     this.vehNext[v] = -1;
+    this.vehEdge[v] = -1;
+    this.count[e]--;
+  }
+
+  /** Tar ut ett fordon ur mitten av en kö. */
+  private unlink(v: number): void {
+    const e = this.vehEdge[v];
+    if (e < 0) return;
+    let prev = -1;
+    for (let cur = this.head[e]; cur !== -1; prev = cur, cur = this.vehNext[cur]) {
+      if (cur !== v) continue;
+      if (prev === -1) this.head[e] = this.vehNext[v];
+      else this.vehNext[prev] = this.vehNext[v];
+      if (this.tail[e] === v) this.tail[e] = prev;
+      break;
+    }
+    this.vehNext[v] = -1;
+    this.vehEdge[v] = -1;
     this.count[e]--;
   }
 

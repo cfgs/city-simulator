@@ -1,13 +1,16 @@
 import type { SimConfig } from './config';
+import type { Quad } from './geometry';
+import type { NetworkData, RoadType } from './network';
+import type { ZoneType } from './zones';
 
 /**
  * Meddelanden mellan huvudtråden (rendering/UI) och simuleringens Web Worker.
- * Principen: kommandon in, ändringar/snapshots ut. Simuleringen äger all spelstate.
+ * Principen: kommandon in, ändringar och snapshots ut. Simuleringen äger all spelstate.
  */
 
 /** Antal Float32-fält per fordon i en snapshot. */
 export const VEH_STRIDE = 6;
-/** Index för vägkanten fordonet står på. */
+/** Tätt index för vägkanten fordonet står på (vägsträcka = kant >> 1, riktning = kant & 1). */
 export const V_EDGE = 0;
 /** Körfält (0 = närmast mittlinjen). */
 export const V_LANE = 1;
@@ -20,22 +23,28 @@ export const V_MAX = 4;
 /** Fordonets id (för stabil färg). */
 export const V_ID = 5;
 
-/** Statisk världsdata som renderingen behöver. Skickas en gång efter generering. */
-export interface WorldData {
-  /** Kartans sida i meter. */
-  size: number;
-  tileSize: number;
-  nodeX: Float32Array;
-  nodeZ: Float32Array;
-  edgeFrom: Int32Array;
-  edgeTo: Int32Array;
-  edgeLanes: Uint8Array;
-  buildingX: Float32Array;
-  buildingZ: Float32Array;
-  buildingZone: Uint8Array;
-  buildingHeight: Float32Array;
-  /** Största antalet fordon som kan finnas i en snapshot (antal bilägare). */
-  maxVehicles: number;
+/** Alla zonceller. Index = cellens id. */
+export interface CellData {
+  slots: number;
+  x: Float32Array;
+  z: Float32Array;
+  dirX: Float32Array;
+  dirZ: Float32Array;
+  /** Zon per cell, DEAD_CELL för tomma platser. */
+  zone: Uint8Array;
+}
+
+/** Nya byggnader. Index i arrayerna motsvarar ids. */
+export interface BuildingData {
+  ids: Int32Array;
+  x: Float32Array;
+  z: Float32Array;
+  dirX: Float32Array;
+  dirZ: Float32Array;
+  width: Float32Array;
+  depth: Float32Array;
+  height: Float32Array;
+  zone: Uint8Array;
 }
 
 export interface SimStats {
@@ -43,6 +52,11 @@ export interface SimStats {
   time: number;
   population: number;
   drivers: number;
+  buildings: number;
+  homes: number;
+  jobs: number;
+  filledJobs: number;
+  unemployed: number;
   atHome: number;
   atWork: number;
   onRoad: number;
@@ -60,11 +74,17 @@ export type ToWorker =
   /** Spelsekunder per verklig sekund. 0 = paus, Infinity = så fort som möjligt. */
   | { type: 'speed'; speed: number }
   /** Lämnar tillbaka snapshot-buffertar så att workern slipper allokera nya. */
-  | { type: 'recycle'; vehicles: ArrayBuffer; edgeLoad: ArrayBuffer };
+  | { type: 'recycle'; vehicles: ArrayBuffer; edgeLoad: ArrayBuffer }
+  /** Varje väg är en eller flera sammanhängande kurvor. */
+  | { type: 'buildRoads'; roads: Quad[][]; roadType: RoadType; requestId: number }
+  | { type: 'bulldoze'; segments: number[] }
+  | { type: 'zone'; x: number; z: number; radius: number; zone: ZoneType };
 
 export interface SnapshotMessage {
   type: 'snapshot';
   time: number;
+  /** Vägnätets version som kantindexen gäller för. */
+  networkVersion: number;
   /** Spelsekunder per verklig sekund just nu – används för att extrapolera rörelse mellan snapshots. */
   speed: number;
   vehicleCount: number;
@@ -74,4 +94,10 @@ export interface SnapshotMessage {
   stats: SimStats;
 }
 
-export type FromWorker = { type: 'world'; world: WorldData } | SnapshotMessage;
+export type FromWorker =
+  | { type: 'network'; data: NetworkData }
+  | { type: 'cells'; data: CellData }
+  | { type: 'cellZones'; ids: Int32Array; zones: Uint8Array }
+  | { type: 'buildings'; removed: Int32Array; added: BuildingData }
+  | { type: 'result'; requestId: number; built: number; failed: number; reason: string }
+  | SnapshotMessage;

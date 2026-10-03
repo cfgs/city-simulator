@@ -1,33 +1,28 @@
 /**
  * Simuleringsparametrar. Spelvärden som carShare ska senare komma från temats
- * gameplay.json – här ligger bara standardvärden för prototypen.
+ * gameplay.json – här ligger bara standardvärden.
  */
 export interface SimConfig {
   seed: number;
-  /** Rutor per kartsida. */
-  gridSize: number;
-  /** Meter per ruta. */
-  tileSize: number;
-  population: number;
+  /** Kartans sida i meter. */
+  mapSize: number;
   /** Andel invånare som pendlar med bil. Övriga åker kollektivt (simuleras som restid). */
   carShare: number;
   /** Klockslag när simuleringen startar. */
   startHour: number;
+  /** Starta med en färdigbyggd stad (för prestandatest) i stället för tom karta. */
+  demo: boolean;
 }
 
 export const DEFAULT_CONFIG: SimConfig = {
   seed: 1,
-  gridSize: 256,
-  tileSize: 16,
-  population: 100_000,
+  mapSize: 4096,
   carShare: 0.4,
-  startHour: 5.5,
+  startHour: 6,
+  demo: false,
 };
 
-/** Kartstorleken är begränsad av vägvalsträdens minne (se PLAN.md, kända begränsningar). */
-const MAX_GRID = 512;
-
-/** Läser överstyrningar från URL:en, t.ex. ?pop=200000&cars=0.6&seed=7&grid=128 */
+/** Läser överstyrningar från URL:en, t.ex. ?demo&cars=0.6&seed=7 */
 export function configFromSearch(search: string): SimConfig {
   const params = new URLSearchParams(search);
   const num = (key: string, fallback: number, min: number, max: number): number => {
@@ -39,8 +34,7 @@ export function configFromSearch(search: string): SimConfig {
   return {
     ...DEFAULT_CONFIG,
     seed: Math.floor(num('seed', DEFAULT_CONFIG.seed, 0, 2 ** 31)),
-    gridSize: Math.floor(num('grid', DEFAULT_CONFIG.gridSize, 32, MAX_GRID)),
-    population: Math.floor(num('pop', DEFAULT_CONFIG.population, 100, 2_000_000)),
     carShare: num('cars', DEFAULT_CONFIG.carShare, 0, 1),
+    demo: params.has('demo'),
   };
 }

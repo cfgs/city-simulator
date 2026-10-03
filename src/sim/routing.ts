@@ -13,17 +13,26 @@ import { MinHeap } from './heap';
  */
 export class Router {
   /** Aktuell kostnad (förväntad restid i sekunder) per kant. Uppdateras av trafikmodellen. */
-  readonly edgeCost: Float32Array;
-  private readonly trees: (Int32Array | undefined)[];
+  edgeCost!: Float32Array;
+  private trees!: (Int32Array | undefined)[];
   /** Destinationer som har ett träd, i den ordning de uppdateras. */
-  private readonly built: number[] = [];
+  private built: number[] = [];
   private cursor = 0;
-  private readonly dist: Float64Array;
+  private dist!: Float64Array;
   private readonly heap = new MinHeap();
+  private graph!: RoadGraph;
 
-  constructor(private readonly graph: RoadGraph) {
+  constructor(graph: RoadGraph) {
+    this.reset(graph);
+  }
+
+  /** Byter till en ny graf (efter att vägnätet ändrats). Alla träd räknas om när de behövs. */
+  reset(graph: RoadGraph): void {
+    this.graph = graph;
     this.edgeCost = Float32Array.from(graph.edgeFreeTime);
     this.trees = new Array(graph.nodeCount);
+    this.built = [];
+    this.cursor = 0;
     this.dist = new Float64Array(graph.nodeCount);
   }
 

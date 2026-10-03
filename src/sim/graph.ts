@@ -1,8 +1,9 @@
+import { ROAD_SPECS, type RoadNetwork } from '../shared/network';
+
 /** Meter som ett fordon tar upp i en kö (bil + avstånd). */
 export const VEHICLE_SPACING = 7.5;
 /** Fordon per sekund och körfält som kan lämna en vägkant (1800 per timme). */
 export const LANE_FLOW_CAP = 0.5;
-export const LANE_WIDTH = 3.5;
 
 export interface EdgeSpec {
   from: number;
@@ -10,14 +11,20 @@ export interface EdgeSpec {
   lanes: number;
   /** Meter per sekund. */
   speed: number;
+  /** Längd i meter. Utelämnad = rakt avstånd mellan noderna. */
+  length?: number;
 }
 
 /**
- * Vägnätet som riktad graf. Noder är korsningar, kanter är vägsträckor i en riktning.
- * Allt ligger i typade arrayer (struct-of-arrays) för att undvika GC-pauser.
+ * Vägnätet som riktad graf med täta index, optimerad för simuleringen. Byggs om från
+ * RoadNetwork vid varje ändring. Allt ligger i typade arrayer (struct-of-arrays).
+ *
+ * Kant e hör till vägsträckan med tätt index e >> 1, i riktning e & 1 (0 = a → b).
  * Grannlistor i CSR-format: utgående kanter från nod n är outEdges[outStart[n] .. outStart[n + 1]).
  */
 export interface RoadGraph {
+  /** Vägnätets version som grafen byggdes från. */
+  version: number;
   nodeCount: number;
   nodeX: Float32Array;
   nodeZ: Float32Array;
@@ -36,6 +43,12 @@ export interface RoadGraph {
   outEdges: Int32Array;
   inStart: Int32Array;
   inEdges: Int32Array;
+  /** Stabilt id per tät nod och per tät vägsträcka. */
+  nodeStable: Int32Array;
+  segStable: Int32Array;
+  /** Tätt index per stabilt id, −1 om det inte finns. */
+  denseNode: Int32Array;
+  denseSeg: Int32Array;
 }
 
 export function buildGraph(nodeX: ArrayLike<number>, nodeZ: ArrayLike<number>, edges: EdgeSpec[]): RoadGraph {
@@ -51,7 +64,7 @@ export function buildGraph(nodeX: ArrayLike<number>, nodeZ: ArrayLike<number>, e
 
   for (let e = 0; e < edgeCount; e++) {
     const { from, to, lanes, speed } = edges[e];
-    const length = Math.hypot(nodeX[to] - nodeX[from], nodeZ[to] - nodeZ[from]);
+    const length = edges[e].length ?? Math.hypot(nodeX[to] - nodeX[from], nodeZ[to] - nodeZ[from]);
     edgeFrom[e] = from;
     edgeTo[e] = to;
     edgeLength[e] = length;
@@ -63,8 +76,11 @@ export function buildGraph(nodeX: ArrayLike<number>, nodeZ: ArrayLike<number>, e
 
   const [outStart, outEdges] = buildCsr(nodeCount, edgeFrom);
   const [inStart, inEdges] = buildCsr(nodeCount, edgeTo);
+  const identity = (n: number) => Int32Array.from({ length: n }, (_, i) => i);
+  const segCount = Math.ceil(edgeCount / 2);
 
   return {
+    version: 0,
     nodeCount,
     nodeX: Float32Array.from(nodeX),
     nodeZ: Float32Array.from(nodeZ),
@@ -80,7 +96,43 @@ export function buildGraph(nodeX: ArrayLike<number>, nodeZ: ArrayLike<number>, e
     outEdges,
     inStart,
     inEdges,
+    nodeStable: identity(nodeCount),
+    segStable: identity(segCount),
+    denseNode: identity(nodeCount),
+    denseSeg: identity(segCount),
   };
+}
+
+/** Bygger simuleringens graf från vägnätet. Täta index följer vägnätets id-ordning. */
+export function graphFromNetwork(net: RoadNetwork): RoadGraph {
+  const nodes = [...net.nodes.values()];
+  const segs = [...net.segments.values()];
+  const denseNode = new Int32Array(nodes.length > 0 ? nodes[nodes.length - 1].id + 1 : 0).fill(-1);
+  nodes.forEach((n, i) => (denseNode[n.id] = i));
+  const denseSeg = new Int32Array(segs.length > 0 ? segs[segs.length - 1].id + 1 : 0).fill(-1);
+  const edges: EdgeSpec[] = [];
+  segs.forEach((s, k) => {
+    denseSeg[s.id] = k;
+    const { lanes, speed } = ROAD_SPECS[s.type];
+    const length = s.poly.length;
+    edges.push({ from: denseNode[s.a], to: denseNode[s.b], lanes, speed, length }, { from: denseNode[s.b], to: denseNode[s.a], lanes, speed, length });
+  });
+  const graph = buildGraph(
+    nodes.map((n) => n.x),
+    nodes.map((n) => n.z),
+    edges,
+  );
+  graph.version = net.version;
+  graph.nodeStable = Int32Array.from(nodes, (n) => n.id);
+  graph.segStable = Int32Array.from(segs, (s) => s.id);
+  graph.denseNode = denseNode;
+  graph.denseSeg = denseSeg;
+  return graph;
+}
+
+/** Tätt nodindex för ett stabilt id, eller −1. */
+export function denseNodeOf(graph: RoadGraph, stableId: number): number {
+  return stableId >= 0 && stableId < graph.denseNode.length ? graph.denseNode[stableId] : -1;
 }
 
 /** Grupperar kanter per nod (nodeOf[e] anger vilken nod kanten hör till). */

@@ -1,17 +1,21 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
+import { GRID_STEP } from '../shared/roadplan';
 
 export interface SceneContext {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: MapControls;
+  /** Rutnätet som visas när fästning mot rutnät är på. */
+  grid: THREE.Object3D;
 }
 
 const SKY = 0xbfd6e8;
 const GROUND = 0x86a872;
+const OUTSIDE = 0x6f8a62;
 
-export function createScene(container: HTMLElement, worldSize: number): SceneContext {
+export function createScene(container: HTMLElement, mapSize: number): SceneContext {
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -19,20 +23,19 @@ export function createScene(container: HTMLElement, worldSize: number): SceneCon
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(SKY);
-  scene.fog = new THREE.Fog(SKY, worldSize * 0.9, worldSize * 2.5);
+  scene.fog = new THREE.Fog(SKY, mapSize * 0.9, mapSize * 2.5);
 
-  const center = worldSize / 2;
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 5, worldSize * 4);
-  camera.position.set(center - worldSize * 0.12, worldSize * 0.16, center + worldSize * 0.2);
+  const center = mapSize / 2;
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 2, mapSize * 4);
+  camera.position.set(center, 420, center + 420);
 
-  // Vänster: panorera · Höger: rotera · Scroll: zooma
   const controls = new MapControls(camera, renderer.domElement);
   controls.target.set(center, 0, center);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
   controls.maxPolarAngle = Math.PI * 0.44;
-  controls.minDistance = 25;
-  controls.maxDistance = worldSize * 1.6;
+  controls.minDistance = 20;
+  controls.maxDistance = mapSize * 1.6;
   controls.zoomToCursor = true;
   controls.update();
 
@@ -41,14 +44,25 @@ export function createScene(container: HTMLElement, worldSize: number): SceneCon
   sun.position.set(-0.6, 1, 0.35);
   scene.add(sun);
 
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(worldSize * 3, worldSize * 3),
-    // Skjuts bakåt i djupbufferten så att vägarna inte flimrar mot marken på långt håll.
-    new THREE.MeshLambertMaterial({ color: GROUND, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }),
-  );
+  // Marken skjuts bakåt i djupbufferten så att vägar och zoner inte flimrar mot den.
+  const groundMaterial = (color: number) =>
+    new THREE.MeshLambertMaterial({ color, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(mapSize, mapSize), groundMaterial(GROUND));
   ground.rotation.x = -Math.PI / 2;
   ground.position.set(center, 0, center);
-  scene.add(ground);
+  const outside = new THREE.Mesh(new THREE.PlaneGeometry(mapSize * 4, mapSize * 4), groundMaterial(OUTSIDE));
+  outside.rotation.x = -Math.PI / 2;
+  outside.position.set(center, -0.5, center);
+  scene.add(ground, outside);
+
+  const grid = new THREE.GridHelper(mapSize, mapSize / GRID_STEP, 0xffffff, 0xffffff);
+  const gridMaterial = grid.material as THREE.Material;
+  gridMaterial.transparent = true;
+  gridMaterial.opacity = 0.12;
+  gridMaterial.depthWrite = false;
+  grid.position.set(center, 0.05, center);
+  grid.visible = false;
+  scene.add(grid);
 
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -56,5 +70,5 @@ export function createScene(container: HTMLElement, worldSize: number): SceneCon
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  return { renderer, scene, camera, controls };
+  return { renderer, scene, camera, controls, grid };
 }

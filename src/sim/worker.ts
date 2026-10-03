@@ -1,5 +1,6 @@
 import type { SimConfig } from '../shared/config';
-import { VEH_STRIDE, type FromWorker, type ToWorker, type WorldData } from '../shared/protocol';
+import { VEH_STRIDE, type BuildingData, type FromWorker, type ToWorker } from '../shared/protocol';
+import { buildDemo } from './demo';
 import { Simulation } from './sim';
 
 /** Max tid per varv i loopen som får gå till simuleringstick. */
@@ -33,41 +34,43 @@ function post(msg: FromWorker, transfer: Transferable[] = []): void {
 
 self.onmessage = (ev: MessageEvent<ToWorker>) => {
   const msg = ev.data;
+  if (msg.type === 'init') {
+    init(msg.config);
+    return;
+  }
+  if (msg.type === 'speed') {
+    speed = msg.speed;
+    owed = 0;
+    return;
+  }
+  if (msg.type === 'recycle') {
+    vehiclePool.push(msg.vehicles);
+    loadPool.push(msg.edgeLoad);
+    return;
+  }
+  const s = sim;
+  if (!s) return;
   switch (msg.type) {
-    case 'init':
-      init(msg.config);
+    case 'buildRoads': {
+      const result = s.buildRoads(msg.roads, msg.roadType);
+      post({ type: 'result', requestId: msg.requestId, ...result });
       break;
-    case 'speed':
-      speed = msg.speed;
-      owed = 0;
+    }
+    case 'bulldoze':
+      s.bulldoze(msg.segments);
       break;
-    case 'recycle':
-      vehiclePool.push(msg.vehicles);
-      loadPool.push(msg.edgeLoad);
+    case 'zone':
+      s.zone(msg.x, msg.z, msg.radius, msg.zone);
       break;
   }
 };
 
 function init(config: SimConfig): void {
   const s = new Simulation(config);
+  if (config.demo) buildDemo(s);
   sim = s;
-  const { graph, buildings } = s.world;
-  const world: WorldData = {
-    size: s.world.size,
-    tileSize: s.world.tileSize,
-    nodeX: graph.nodeX,
-    nodeZ: graph.nodeZ,
-    edgeFrom: graph.edgeFrom,
-    edgeTo: graph.edgeTo,
-    edgeLanes: graph.edgeLanes,
-    buildingX: buildings.x,
-    buildingZ: buildings.z,
-    buildingZone: buildings.zone,
-    buildingHeight: buildings.height,
-    maxVehicles: s.drivers,
-  };
-  // Kopieras (ingen transfer) – simuleringen behåller sina egna arrayer.
-  post({ type: 'world', world });
+  s.dirty.network = true;
+  s.dirty.cells = true;
   lastLoop = windowStart = performance.now();
   windowGameStart = s.time;
   loop();
@@ -105,6 +108,7 @@ function loop(): void {
     windowTicks = 0;
     windowTickTime = 0;
   }
+  flushChanges(s);
   if (now - lastSnapshot >= SNAPSHOT_INTERVAL_MS) {
     lastSnapshot = now;
     sendSnapshot(s);
@@ -112,15 +116,61 @@ function loop(): void {
   setTimeout(loop, 0);
 }
 
+/** Skickar ändringar i vägnät, zoner och byggnader till renderingen. */
+function flushChanges(s: Simulation): void {
+  const { dirty } = s;
+  if (dirty.network) {
+    post({ type: 'network', data: s.net.toData() });
+    dirty.network = false;
+  }
+  if (dirty.cells) {
+    const data = s.zoning.data();
+    post({ type: 'cells', data }, [data.x.buffer, data.z.buffer, data.dirX.buffer, data.dirZ.buffer, data.zone.buffer]);
+    dirty.cells = false;
+    dirty.cellZones.clear();
+  } else if (dirty.cellZones.size > 0) {
+    const ids = Int32Array.from(dirty.cellZones);
+    const zones = Uint8Array.from(ids, (c) => s.zoning.zone[c]);
+    post({ type: 'cellZones', ids, zones }, [ids.buffer, zones.buffer]);
+    dirty.cellZones.clear();
+  }
+  const b = s.buildings;
+  if (b.added.size > 0 || b.removed.size > 0) {
+    const ids = Int32Array.from(b.added);
+    const pick = (a: Float32Array) => Float32Array.from(ids, (id) => a[id]);
+    const added: BuildingData = {
+      ids,
+      x: pick(b.x),
+      z: pick(b.z),
+      dirX: pick(b.dirX),
+      dirZ: pick(b.dirZ),
+      width: pick(b.width),
+      depth: pick(b.depth),
+      height: pick(b.height),
+      zone: Uint8Array.from(ids, (id) => b.zone[id]),
+    };
+    post({ type: 'buildings', removed: Int32Array.from(b.removed), added });
+    b.added.clear();
+    b.removed.clear();
+  }
+}
+
 function sendSnapshot(s: Simulation): void {
-  const vehicles = new Float32Array(vehiclePool.pop() ?? new ArrayBuffer(Math.max(1, s.drivers) * VEH_STRIDE * 4));
-  const edgeLoad = new Float32Array(loadPool.pop() ?? new ArrayBuffer(s.world.graph.edgeCount * 4));
+  const needed = Math.max(1, s.traffic.onRoad) * VEH_STRIDE * 4;
+  let vbuf = vehiclePool.pop();
+  if (!vbuf || vbuf.byteLength < needed) vbuf = new ArrayBuffer(Math.ceil(needed * 1.5));
+  const edgeBytes = Math.max(1, s.graph.edgeCount) * 4;
+  let lbuf = loadPool.pop();
+  if (!lbuf || lbuf.byteLength !== edgeBytes) lbuf = new ArrayBuffer(edgeBytes);
+  const vehicles = new Float32Array(vbuf);
+  const edgeLoad = new Float32Array(lbuf);
   const vehicleCount = s.traffic.writeSnapshot(s.time, vehicles, edgeLoad);
   const currentSpeed = speed === 0 ? 0 : keepingUp && Number.isFinite(speed) ? speed : effectiveSpeed;
   post(
     {
       type: 'snapshot',
       time: s.time,
+      networkVersion: s.net.version,
       speed: currentSpeed,
       vehicleCount,
       vehicles,

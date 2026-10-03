@@ -30,10 +30,11 @@ function row(label: string, value: string, extra = ''): string {
   return `${label.padEnd(13)}${value.padStart(9)}${extra ? `  ${extra}` : ''}`;
 }
 
-/** Prestanda- och statistikpanel med hastighetsknappar. */
+/** Statistik- och prestandapanel med hastighetsknappar. */
 export class Hud {
   private readonly text: HTMLPreElement;
   private readonly buttons: HTMLButtonElement[] = [];
+  private readonly traffic: HTMLButtonElement;
   private speedIndex = DEFAULT_SPEED;
   private lastRunning = DEFAULT_SPEED;
 
@@ -48,31 +49,32 @@ export class Hud {
       controls.appendChild(button);
       this.buttons.push(button);
     });
-    const traffic = document.createElement('button');
-    traffic.textContent = 'Trafikvy';
-    traffic.title = 'Tangent T';
-    traffic.classList.add('active');
-    traffic.onclick = () => traffic.classList.toggle('active', callbacks.onToggleTraffic());
-    controls.appendChild(traffic);
+    this.traffic = document.createElement('button');
+    this.traffic.textContent = 'Trafikvy';
+    this.traffic.title = 'Tangent T';
+    this.traffic.classList.add('active');
+    this.traffic.onclick = () => this.toggleTraffic();
+    controls.appendChild(this.traffic);
 
     this.text = document.createElement('pre');
-    const help = document.createElement('div');
-    help.className = 'help';
-    help.textContent = 'Dra: panorera · Högerdra: rotera · Scroll: zooma · Mellanslag: paus';
-    root.append(controls, this.text, help);
-
-    window.addEventListener('keydown', (ev) => {
-      if (ev.key === ' ') {
-        ev.preventDefault();
-        this.setSpeed(this.speedIndex === 0 ? this.lastRunning : 0);
-      } else if (ev.key === 't' || ev.key === 'T') {
-        traffic.click();
-      } else {
-        const i = SPEEDS.findIndex((s) => s.key === ev.key);
-        if (i >= 0) this.setSpeed(i);
-      }
-    });
+    root.append(controls, this.text);
     this.setSpeed(DEFAULT_SPEED);
+  }
+
+  togglePause(): void {
+    this.setSpeed(this.speedIndex === 0 ? this.lastRunning : 0);
+  }
+
+  toggleTraffic(): void {
+    this.traffic.classList.toggle('active', this.callbacks.onToggleTraffic());
+  }
+
+  /** Hanterar hastighetstangenterna 0–5. Returnerar true om tangenten användes. */
+  handleKey(key: string): boolean {
+    const i = SPEEDS.findIndex((s) => s.key === key);
+    if (i < 0) return false;
+    this.setSpeed(i);
+    return true;
   }
 
   update(stats: SimStats | null, fps: number, visibleVehicles: number): void {
@@ -82,13 +84,15 @@ export class Hud {
     }
     const target = SPEEDS[this.speedIndex].speed;
     const tempo = target === 0 ? 'paus' : `${Number.isFinite(target) ? fmt(target) : 'max'}× (uppnått ${fmt(stats.effectiveSpeed)}×)`;
+    const openJobs = stats.jobs - stats.filledJobs;
     this.text.textContent = [
       clock(stats.time),
       `Tempo: ${tempo}`,
       '',
       row('Invånare', fmt(stats.population), `bilägare ${fmt(stats.drivers)}`),
-      row('Hemma', fmt(stats.atHome)),
-      row('På jobbet', fmt(stats.atWork)),
+      row('Jobb', fmt(stats.jobs), `${fmt(openJobs)} lediga · ${fmt(stats.unemployed)} arbetslösa`),
+      row('Byggnader', fmt(stats.buildings)),
+      row('Hemma', fmt(stats.atHome), `på jobbet ${fmt(stats.atWork)}`),
       row('Bilar på väg', fmt(stats.onRoad), stats.waitingToEnter > 0 ? `+${fmt(stats.waitingToEnter)} väntar` : ''),
       row('Kollektivt', fmt(stats.inTransit)),
       row('Restid bil', `${dec(stats.avgCarTripMin)} min`),
