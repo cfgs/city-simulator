@@ -1,6 +1,6 @@
 import { atLength, distanceTo } from '../shared/geometry';
 import type { CellData } from '../shared/protocol';
-import { ROAD_SPECS, trimAt, type RoadNetwork, type RoadSegment } from '../shared/network';
+import { MAX_HALF_WIDTH, ROAD_SPECS, RoadType, trimAt, type RoadNetwork, type RoadSegment } from '../shared/network';
 import type { NetworkChange } from '../shared/roadplan';
 import { CELL, DEAD_CELL, DEPTH, ZoneType } from '../shared/zones';
 
@@ -62,7 +62,7 @@ export class Zoning {
   constructor(readonly mapSize: number) {}
 
   regenerate(net: RoadNetwork, change: NetworkChange, cellCountOf: (building: number) => number): RegenResult {
-    const reach = DEPTH * CELL + ROAD_SPECS[ROAD_SPECS.length - 1].halfWidth + 4;
+    const reach = DEPTH * CELL + MAX_HALF_WIDTH + 4;
     const box = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
     const extend = (minX: number, minZ: number, maxX: number, maxZ: number) => {
       box.minX = Math.min(box.minX, minX);
@@ -239,7 +239,8 @@ export class Zoning {
     const trimA = trimAt(net, seg.a, seg.id);
     const trimB = trimAt(net, seg.b, seg.id);
     const usable = poly.length - trimA - trimB;
-    const cols = Math.max(0, Math.floor(usable / CELL + 1e-6));
+    // Längs motorvägen finns inga tomter
+    const cols = seg.type === RoadType.Highway ? 0 : Math.max(0, Math.floor(usable / CELL + 1e-6));
     const sc: SegCells = {
       cols,
       s0: trimA + (usable - cols * CELL) / 2,
@@ -290,7 +291,7 @@ export class Zoning {
 
   /** Ligger cellen (helt eller delvis) på någon väg? */
   private nearRoad(net: RoadNetwork, x: number, z: number): boolean {
-    const reach = ROAD_SPECS[ROAD_SPECS.length - 1].halfWidth + CELL;
+    const reach = MAX_HALF_WIDTH + CELL;
     for (const id of net.segmentsNear(x - reach, z - reach, x + reach, z + reach)) {
       const seg = net.segments.get(id)!;
       const limit = ROAD_SPECS[seg.type].halfWidth + CELL / 2 + ROAD_GAP - 0.1;

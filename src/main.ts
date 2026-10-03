@@ -2,6 +2,7 @@ import './style.css';
 import * as THREE from 'three';
 import { BuildingLayer } from './render/buildings';
 import { CameraKeys } from './render/cameraKeys';
+import { ExitSigns } from './render/exits';
 import { Preview } from './render/preview';
 import { RoadLayer } from './render/roads';
 import { createScene } from './render/scene';
@@ -16,15 +17,19 @@ import { Toolbar } from './ui/toolbar';
 import { Tooltip } from './ui/tooltip';
 
 const config = configFromSearch(location.search);
-const ctx = createScene(document.getElementById('app')!, config.mapSize);
+// Utan demostad börjar man vid motorvägens mittersta avfart, där staden kan anslutas.
+const focus = config.demo ? { x: config.mapSize / 2, z: config.mapSize / 2 } : { x: config.mapSize / 2, z: config.mapSize - 600 };
+const ctx = createScene(document.getElementById('app')!, config.mapSize, focus);
 const canvas = ctx.renderer.domElement;
 const roads = new RoadLayer();
 const vehicles = new VehicleLayer();
 const buildings = new BuildingLayer();
 const zones = new ZoneOverlay();
 const preview = new Preview();
+const exits = new ExitSigns();
 zones.group.visible = false;
-ctx.scene.add(roads.group, buildings.group, vehicles.group, zones.group, preview.group);
+ctx.scene.add(roads.group, buildings.group, vehicles.group, zones.group, preview.group, exits.group);
+const notice = document.getElementById('notice')!;
 const cameraKeys = new CameraKeys(ctx.camera, ctx.controls);
 const tooltip = new Tooltip();
 
@@ -80,6 +85,7 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
     case 'network':
       net = RoadNetwork.fromData(msg.data);
       roads.rebuild(net);
+      exits.rebuild(net);
       tools.setNetwork(net);
       roadsDirty = true;
       document.getElementById('loading')?.remove();
@@ -177,6 +183,9 @@ function frame(now: number): void {
   if (now - lastHudUpdate >= 250) {
     lastHudUpdate = now;
     hud.update(latest?.stats ?? null, fps, vehicles.visibleCount);
+    const lots = latest?.stats.unconnectedLots ?? 0;
+    notice.textContent = lots > 0 ? `${lots.toLocaleString('sv-SE')} zonade tomter saknar anslutning till motorvägen – dra en väg till en avfart (blå ring)` : '';
+    notice.classList.toggle('visible', lots > 0);
   }
 }
 onToolChange();

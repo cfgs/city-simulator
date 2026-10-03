@@ -62,6 +62,17 @@ export function buildDemo(sim: Simulation): void {
     RoadType.Avenue,
   );
 
+  // Anslut motorvägens avfarter till ringvägen, annars kan ingen flytta in
+  sim.buildRoads(
+    sim.net.exits.map((id) => {
+      const exit = sim.net.node(id);
+      const d = Math.hypot(exit.x - c, exit.z - c);
+      const ring = { x: c + ((exit.x - c) * RING_RADIUS) / d, z: c + ((exit.z - c) * RING_RADIUS) / d };
+      return [straight(exit.x, exit.z, ring.x, ring.z)];
+    }),
+    RoadType.Avenue,
+  );
+
   // Handel i centrum, industriområden i öster och väster, bostäder i övrigt.
   // Ytorna är valda så att antalet jobb ungefär motsvarar antalet invånare.
   sim.zoneAll((x, z) => {

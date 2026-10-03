@@ -12,6 +12,11 @@ export interface SimConfig {
   startHour: number;
   /** Starta med en färdigbyggd stad (för prestandatest) i stället för tom karta. */
   demo: boolean;
+  /**
+   * Motorväg till omvärlden. Med den växer staden bara där vägarna når motorvägen, och nya
+   * invånare kör in från kartkanten. Utan den (används i tester) flyttar folk in direkt.
+   */
+  outsideConnection: boolean;
 }
 
 export const DEFAULT_CONFIG: SimConfig = {
@@ -20,6 +25,7 @@ export const DEFAULT_CONFIG: SimConfig = {
   carShare: 0.4,
   startHour: 6,
   demo: false,
+  outsideConnection: true,
 };
 
 /** Läser överstyrningar från URL:en, t.ex. ?demo&cars=0.6&seed=7 */

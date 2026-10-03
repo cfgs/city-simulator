@@ -17,6 +17,7 @@ Ett stadsbyggarspel i webbläsaren i stil med SimCity och Cities: Skylines. Det 
 | Vägar | Fria kurvor (kvadratiska Bézierkurvor) och rutnät | Raka vägar är kurvor utan böj. Kurvorna går att dela exakt där nya korsningar uppstår. |
 | Rita vägar | Rak väg, kurva med tre klick, frihand, rutnätsverktyg, fästning mot rutnät | Både precisa och snabba sätt att bygga. |
 | Zoner | Celler längs vägarna (8×8 m, fyra rader djupa), som i Cities: Skylines | Följer kurvor. Ersätter fas 0:s rutnät av rutor. |
+| Omvärlden | Motorväg längs kartans sydkant med tre färdiga avfarter | Staden växer bara där vägarna når motorvägen, och nya invånare kör in den vägen. Färdiga avfarter är realistiskt och tydligt. |
 | Rust/WebAssembly | Nej, inte nu | Simuleringen är redan snabb nog (se mätningar). Kan bytas senare bakom samma meddelandegränssnitt. |
 
 ## Arkitektur
@@ -78,6 +79,15 @@ src/
 - **Byggnader växer upp** slumpvis på zonade tomter: 1–2 celler breda och 1–4 djupa. Bostäder ger invånare som flyttar in direkt. Handel och industri ger jobb. I fas 2 ersätts detta av riktig efterfrågan.
 - **Rivs en bostad** flyttar invånarna från staden. **Rivs en arbetsplats** blir de anställda arbetslösa och får nya jobb när det finns lediga.
 
+## Motorvägen och inflyttning
+
+- **Motorvägen** (`sim/highway.ts`) byggs när spelet startar. Den går längs kartans sydkant med lätta svängar, har 3 körfält per riktning och 100 km/h, och fortsätter 300 m ut över kartkanten åt båda hållen. Ändarna (`net.outside`) är förbindelsen med omvärlden.
+- **Tre färdiga avfarter** är låsta 90 m långa stumpar in mot kartan. Deras yttre ände (`net.exits`) har en blå skylt och en blå ring tills någon ansluter en väg dit.
+- **Motorvägen kan inte korsas och inte anslutas direkt.** Planeraren fäster aldrig mot den och nekar vägar som korsar den. Motorvägen och avfarterna kan inte rivas.
+- **Byggnader växer bara på anslutna tomter**, alltså tomter vars vägar når motorvägens ändar. Det räknas om efter varje ändring i vägnätet. Finns det zonade tomter utan anslutning visas en varning.
+- **Nya invånare kör in** (tillståndet `MovingIn`). Bilägare kör från en av motorvägens ändar till sin nya bostad, och övriga kommer kollektivt (som restid). Först när de är framme börjar de pendla.
+- Demostaden ansluter alla tre avfarter till ringvägen och flyttar in alla direkt. Tester kan stänga av motorvägen med `outsideConnection: false`.
+
 ## Temasystemet (planerat)
 
 ```
@@ -118,6 +128,7 @@ Uppmätt 2026-10-03 på en 256×256-karta (4 km × 4 km, 1 294 korsningar, 4 566
 
 - [x] **Fas 0 – Prestandaprototyp.** 3D-karta, slumpat vägnät, 100 000 pendlande invånare, trafikvy, HUD med mätvärden.
 - [x] **Fas 1 – Bygga själv.** Tom karta. Raka vägar, kurvor (tre klick), frihand, rutnätsverktyg och fästning mot rutnät. Gator och huvudleder. Riva. Zoner längs vägarna med pensel. Byggnader och invånare som växer upp. Demostaden (`?demo`) byggs med samma verktyg.
+- [x] **Motorväg och inflyttning.** Förbindelse med omvärlden, färdiga avfarter, tillväxt bara på anslutna tomter, inflyttning med bil.
 - [ ] **Fas 2 – Tillväxt och ekonomi.** Efterfrågan per zontyp. Byggnader växer och förfaller efter markvärde, tillgänglighet och efterfrågan. Skatter, budget, inflyttning och utflyttning.
 - [ ] **Fas 3 – Försörjning och service.** El och vatten (nät som flood fill), polis, brandkår och skola med täckningsområden. Kartlägen som visar till exempel täckning och föroreningar.
 - [ ] **Fas 4 – Temasystem och nordiskt tema.** gameplay.json och visual.json med schema. Byggnader genererade från regler. Årstider och snö som första spelmodul.
@@ -142,6 +153,8 @@ Demostaden (`?demo`): 849 korsningar, 1 636 vägsträckor, 55 000 zonceller, 9 6
 - **Byggnader växer upp utan efterfrågan, och det finns inga pengar ännu.** Kommer i fas 2.
 - **Marken är platt.** Det finns inga höjder, broar eller tunnlar, och korsningar har ingen vägmålning.
 - **Det går inte att uppgradera vägar.** För att byta gata mot huvudled måste man riva och bygga om.
+- **Avfarterna är vanliga T-korsningar i simuleringen.** Det finns inga ramper eller planskilda korsningar, och motorvägen går i samma kapacitetsmodell som andra vägar.
+- **Bara inflyttning går via motorvägen än så länge.** Det finns inga pendlare från andra städer, ingen godstrafik och ingen utflyttning. De passar att bygga i fas 2 och 6.
 - **Korsningar saknar egen kapacitet.** Det finns inga trafikljus, svängfiler eller väjningsregler. Flaskhalsar finns bara per vägkant.
 - **Alla invånare pendlar** bostad → jobb → bostad. Det finns inga barn, pensionärer, ärenden eller fritidsresor.
 - **Det första vägvalsträdet för en destination räknas ut när det behövs.** Det ger enstaka tick på 30–90 ms i början av första rusningen. Det märks inte i bild eftersom simuleringen går i en egen tråd, men träden kan räknas ut i förväg om det behövs.
@@ -164,6 +177,7 @@ URL-parametrar: `?demo` startar med en färdigbyggd stad, `cars=0.6` ändrar bil
 - Högerdra eller Q/E roterar. Scroll zoomar.
 
 **Bygga**
+- Börja med att dra en väg till en avfart (blå ring vid motorvägen), annars kan ingen flytta in.
 - Rak väg: klicka start och slut. Vägen fortsätter från slutet.
 - Kurva: klicka start, böjpunkt och slut.
 - Frihand: håll nere och rita.

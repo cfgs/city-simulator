@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { atLength, resample } from '../shared/geometry';
-import { ROAD_SPECS, trimAt, type RoadNetwork, type RoadSegment } from '../shared/network';
-import { MeshBuilder, rgb } from './meshBuilder';
+import { ROAD_SPECS, RoadType, trimAt, type RoadNetwork, type RoadSegment } from '../shared/network';
+import { MeshBuilder, rgb, type Rgb } from './meshBuilder';
 
 export const ROAD_Y = 0.3;
 const LUT_SIZE = 64;
 /** Beläggning under detta räknas som tom väg. */
 const EMPTY_LOAD = 0.03;
 const ASPHALT = rgb(0x52555a);
+const HIGHWAY = rgb(0x3e4146);
 const SAMPLE_STEP = 3;
 
 /**
@@ -41,6 +42,8 @@ export class RoadLayer {
   private colorAttr: THREE.BufferAttribute | null = null;
   /** Första vertex och antal vertexar per tät kant. */
   private edgeVerts = new Int32Array(0);
+  /** Grundfärg per tät kant (när trafikvyn inte färgar den). */
+  private edgeColor: Rgb[] = [];
   private readonly lut = new Float32Array(LUT_SIZE * 3);
   private readonly material = new THREE.MeshLambertMaterial({ vertexColors: true });
 
@@ -53,6 +56,7 @@ export class RoadLayer {
     const E = segs.length * 2;
     const builder = new MeshBuilder();
     this.edgeVerts = new Int32Array(E * 2);
+    this.edgeColor = new Array(E);
     const pathChunks: Float32Array[] = new Array(E);
     const paths: EdgePaths = {
       edgeCount: E,
@@ -76,11 +80,13 @@ export class RoadLayer {
         tb *= f;
       }
       const samples = resample(seg.poly, ta, L - tb, isStraight(seg) ? Infinity : SAMPLE_STEP);
+      const color = seg.type === RoadType.Highway ? HIGHWAY : ASPHALT;
       for (const dir of [0, 1]) {
         const e = 2 * k + dir;
         const start = builder.vertexCount;
-        if (dir === 0) builder.ribbon(samples, 0, hw, ROAD_Y, ASPHALT);
-        else builder.ribbon(samples, -hw, 0, ROAD_Y, ASPHALT);
+        this.edgeColor[e] = color;
+        if (dir === 0) builder.ribbon(samples, 0, hw, ROAD_Y, color);
+        else builder.ribbon(samples, -hw, 0, ROAD_Y, color);
         this.edgeVerts[e * 2] = start;
         this.edgeVerts[e * 2 + 1] = builder.vertexCount - start;
         pathChunks[e] = dir === 0 ? samples : reversed(samples);
@@ -122,10 +128,8 @@ export class RoadLayer {
     const E = this.edgeVerts.length / 2;
     const useLoad = trafficView && edgeLoad !== null && edgeLoad.length >= E;
     for (let e = 0; e < E; e++) {
-      let r = ASPHALT[0];
-      let g = ASPHALT[1];
-      let b = ASPHALT[2];
-      if (useLoad) {
+      let [r, g, b] = this.edgeColor[e];
+      if (useLoad && edgeLoad![e] >= EMPTY_LOAD) {
         const i = Math.min(LUT_SIZE - 1, Math.floor(edgeLoad![e] * (LUT_SIZE - 1))) * 3;
         r = this.lut[i];
         g = this.lut[i + 1];
@@ -166,7 +170,8 @@ export class RoadLayer {
         }
       }
     }
-    builder.convex(points, ROAD_Y + 0.01, ASPHALT);
+    const onHighway = node.segs.some((s) => net.segments.get(s)!.type === RoadType.Highway);
+    builder.convex(points, ROAD_Y + 0.01, onHighway ? HIGHWAY : ASPHALT);
   }
 
   private buildLut(): void {

@@ -15,7 +15,8 @@ const SKY = 0xbfd6e8;
 const GROUND = 0x86a872;
 const OUTSIDE = 0x6f8a62;
 
-export function createScene(container: HTMLElement, mapSize: number): SceneContext {
+/** `focus` = punkten på marken som kameran först tittar på. */
+export function createScene(container: HTMLElement, mapSize: number, focus: { x: number; z: number }): SceneContext {
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -27,10 +28,10 @@ export function createScene(container: HTMLElement, mapSize: number): SceneConte
 
   const center = mapSize / 2;
   const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 2, mapSize * 4);
-  camera.position.set(center, 420, center + 420);
+  camera.position.set(focus.x, 420, focus.z + 420);
 
   const controls = new MapControls(camera, renderer.domElement);
-  controls.target.set(center, 0, center);
+  controls.target.set(focus.x, 0, focus.z);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
   controls.maxPolarAngle = Math.PI * 0.44;

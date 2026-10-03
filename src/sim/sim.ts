@@ -7,6 +7,7 @@ import { applyPlan, planRoad, type NetworkChange } from '../shared/roadplan';
 import { CELL, ZoneType } from '../shared/zones';
 import { Buildings } from './buildings';
 import { denseNodeOf, graphFromNetwork, type RoadGraph } from './graph';
+import { buildHighway } from './highway';
 import { CitizenState, Population, Travel } from './population';
 import { Router } from './routing';
 import { EventType, MinuteScheduler } from './scheduler';
@@ -52,6 +53,9 @@ export class Simulation {
   private readonly rng: Rng;
   private inTransit = 0;
   private ticks = 0;
+  /** Korsningar (stabila id) vars vägar når motorvägen. null = ingen motorväg, allt räknas som anslutet. */
+  private connected: Uint8Array | null = null;
+  private unconnectedLots = 0;
 
   constructor(readonly config: SimConfig) {
     this.rng = mulberry32(config.seed);
@@ -62,6 +66,10 @@ export class Simulation {
     this.zoning = new Zoning(config.mapSize);
     this.time = config.startHour * HOUR;
     this.scheduler = new MinuteScheduler(this.time);
+    if (config.outsideConnection) {
+      buildHighway(this.net);
+      this.networkChanged({ added: [...this.net.segments.keys()], removed: [] });
+    }
   }
 
   // ---------------------------------------------------------------- Kommandon
@@ -87,7 +95,7 @@ export class Simulation {
   }
 
   bulldoze(segments: number[]): void {
-    const removed = segments.filter((id) => this.net.segments.has(id));
+    const removed = segments.filter((id) => this.net.segments.get(id)?.locked === false);
     if (removed.length === 0) return;
     for (const id of removed) this.net.removeSegment(id);
     this.networkChanged({ added: [], removed });
@@ -108,8 +116,13 @@ export class Simulation {
 
   /** Låter byggnader växa upp på alla lediga zonade tomter direkt (används av demostaden). */
   growAll(): void {
-    while (this.zoning.candidates.size > 0) {
-      for (const cell of [...this.zoning.candidates]) if (this.zoning.candidates.has(cell)) this.spawnLot(cell);
+    for (let spawned = 1; spawned > 0; ) {
+      spawned = 0;
+      for (const cell of [...this.zoning.candidates]) {
+        if (!this.zoning.candidates.has(cell) || !this.isConnected(cell)) continue;
+        this.spawnLot(cell, true);
+        spawned++;
+      }
     }
   }
 
@@ -142,6 +155,8 @@ export class Simulation {
       unemployed: people.unemployed.size,
       atHome: people.stateCount[CitizenState.Home],
       atWork: people.stateCount[CitizenState.Work],
+      movingIn: people.stateCount[CitizenState.MovingIn],
+      unconnectedLots: this.unconnectedLots,
       onRoad: this.traffic.onRoad,
       waitingToEnter: this.traffic.waiting,
       inTransit: this.inTransit,
@@ -165,21 +180,60 @@ export class Simulation {
     this.graph = graphFromNetwork(this.net);
     this.router.reset(this.graph);
     this.traffic.remap(this.graph, this.time);
+    this.updateConnectivity();
     this.dirty.network = true;
     this.dirty.cells = true;
   }
 
-  // ---------------------------------------------------------------- Byggnader
-
-  private grow(): void {
-    let tries = 0;
-    for (const cell of this.zoning.candidates) {
-      if (tries++ >= GROW_TRIES) break;
-      if (this.rng() < GROW_CHANCE) this.spawnLot(cell);
+  /** Vilka korsningar når motorvägens ändar (omvärlden)? */
+  private updateConnectivity(): void {
+    const { net } = this;
+    if (net.outside.length === 0) {
+      this.connected = null;
+      return;
     }
+    let maxId = 0;
+    for (const id of net.nodes.keys()) maxId = Math.max(maxId, id);
+    const connected = new Uint8Array(maxId + 1);
+    const stack = net.outside.filter((id) => net.nodes.has(id));
+    for (const id of stack) connected[id] = 1;
+    while (stack.length > 0) {
+      const node = net.nodes.get(stack.pop()!)!;
+      for (const segId of node.segs) {
+        const seg = net.segments.get(segId)!;
+        const other = seg.a === node.id ? seg.b : seg.a;
+        if (connected[other]) continue;
+        connected[other] = 1;
+        stack.push(other);
+      }
+    }
+    this.connected = connected;
   }
 
-  private spawnLot(cell: number): void {
+  private isConnected(cell: number): boolean {
+    if (!this.connected) return true;
+    const node = this.zoning.accessNode(this.net, cell);
+    return node < this.connected.length && this.connected[node] === 1;
+  }
+
+  // ---------------------------------------------------------------- Byggnader
+
+  /** Byggnader växer bara upp på tomter vars vägar når motorvägen. */
+  private grow(): void {
+    let tries = 0;
+    let unconnected = 0;
+    for (const cell of this.zoning.candidates) {
+      if (!this.isConnected(cell)) {
+        unconnected++;
+        continue;
+      }
+      if (tries++ < GROW_TRIES && this.rng() < GROW_CHANCE) this.spawnLot(cell, false);
+    }
+    this.unconnectedLots = unconnected;
+  }
+
+  /** `immediate`: invånarna bor där direkt i stället för att köra in från omvärlden. */
+  private spawnLot(cell: number, immediate: boolean): void {
     const zn = this.zoning;
     const cells = zn.lotFrom(cell);
     if (cells.length === 0) return;
@@ -222,7 +276,7 @@ export class Simulation {
       cells,
     });
     zn.setBuilding(cells, b);
-    if (zone === ZoneType.Residential) this.moveIn(b);
+    if (zone === ZoneType.Residential) this.moveIn(b, immediate);
     else this.fillJobs();
   }
 
@@ -246,19 +300,24 @@ export class Simulation {
 
   // ---------------------------------------------------------------- Invånare
 
-  private moveIn(home: number): void {
+  private moveIn(home: number, immediate: boolean): void {
     const p = this.people;
     const rng = this.rng;
+    const fromOutside = !immediate && this.net.outside.length > 0;
+    this.traffic.ensureVehicles(p.slots + this.buildings.capacity[home]);
     for (let i = 0; i < this.buildings.capacity[home]; i++) {
       const c = p.alloc(this.time, rng() < this.config.carShare);
       p.home[c] = home;
+      if (fromOutside) {
+        p.setState(c, CitizenState.MovingIn);
+        this.travelFromOutside(c, home);
+      }
       const start = clamp(7.5 * HOUR + gaussian(rng) * 0.75 * HOUR, 5.75 * HOUR, 10.5 * HOUR);
       p.workStart[c] = start;
       p.workEnd[c] = clamp(start + 8.5 * HOUR + gaussian(rng) * 0.5 * HOUR, start + HOUR, 23.5 * HOUR);
       this.buildings.filled[home]++;
       this.assignJob(c);
     }
-    this.traffic.ensureVehicles(p.capacity);
   }
 
   private moveOut(c: number): void {
@@ -327,6 +386,26 @@ export class Simulation {
     }
   };
 
+  /** Nyinflyttade kör in från en av motorvägens ändar till sin nya bostad. */
+  private travelFromOutside(c: number, home: number): void {
+    const p = this.people;
+    const b = this.buildings;
+    const entry = this.net.outside[Math.floor(this.rng() * this.net.outside.length)];
+    if (p.hasCar[c]) {
+      const origin = denseNodeOf(this.graph, entry);
+      const dest = denseNodeOf(this.graph, b.access[home]);
+      if (origin >= 0 && dest >= 0 && this.traffic.depart(c, origin, dest, this.time)) {
+        p.travel[c] = Travel.Car;
+        return;
+      }
+    }
+    const n = this.net.node(entry);
+    const distance = Math.abs(b.x[home] - n.x) + Math.abs(b.z[home] - n.z);
+    p.travel[c] = Travel.Transit;
+    this.inTransit++;
+    this.scheduler.schedule(this.time + TRANSIT_WAIT + distance / TRANSIT_SPEED, c, EventType.ArriveTransit);
+  }
+
   private startTrip(c: number, from: number, to: number): void {
     const p = this.people;
     const b = this.buildings;
@@ -356,6 +435,9 @@ export class Simulation {
     } else if (p.state[c] === CitizenState.ToHome) {
       p.setState(c, CitizenState.Home);
       if (p.work[c] >= 0) this.scheduler.schedule(this.nextOccurrence(p.workStart[c], HOUR), c, EventType.DepartWork);
+    } else if (p.state[c] === CitizenState.MovingIn) {
+      p.setState(c, CitizenState.Home);
+      if (p.work[c] >= 0) this.scheduler.schedule(this.nextOccurrence(p.workStart[c], 60), c, EventType.DepartWork);
     }
   }
 

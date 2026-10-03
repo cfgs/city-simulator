@@ -9,7 +9,7 @@ import { Simulation } from './sim';
 
 /** Ett litet rutnät 4×4 kvarter med bostäder i väster och jobb i öster. */
 function smallTown(): Simulation {
-  const sim = new Simulation({ ...DEFAULT_CONFIG, mapSize: 2000, carShare: 0.6, startHour: 0 });
+  const sim = new Simulation({ ...DEFAULT_CONFIG, mapSize: 2000, carShare: 0.6, startHour: 0, outsideConnection: false });
   const lines = [400, 472, 544, 616, 688];
   sim.buildRoads(lines.map((x) => [straight(x, 400, x, 688)]), RoadType.Street);
   sim.buildRoads(lines.map((z) => [straight(400, z, 688, z)]), RoadType.Street);
@@ -84,5 +84,57 @@ describe('Simulation', () => {
     expect(sim.buildings.count).toBeGreaterThan(5000);
     expect(sim.people.count).toBeGreaterThan(50_000);
     checkInvariants(sim);
+  });
+});
+
+describe('Motorvägen och inflyttning', () => {
+  /** Ett litet rutnät mitt på kartan, långt från motorvägen. */
+  function townAwayFromHighway(): Simulation {
+    const sim = new Simulation({ ...DEFAULT_CONFIG, carShare: 0.6, startHour: 0 });
+    const lines = [1900, 1972, 2044, 2116, 2188];
+    sim.buildRoads(lines.map((x) => [straight(x, 1900, x, 2188)]), RoadType.Street);
+    sim.buildRoads(lines.map((z) => [straight(1900, z, 2188, z)]), RoadType.Street);
+    // Bara staden zonas – inte cellerna längs avfarterna, som ju redan är anslutna
+    sim.zoneAll((x, z) => (z > 2300 ? ZoneType.None : x < 2044 ? ZoneType.Residential : ZoneType.Commercial));
+    return sim;
+  }
+
+  it('builds a locked highway with exits and outside connections', () => {
+    const sim = new Simulation(DEFAULT_CONFIG);
+    expect(sim.net.outside).toHaveLength(2);
+    expect(sim.net.exits).toHaveLength(3);
+    const locked = [...sim.net.segments.values()].filter((s) => s.locked);
+    expect(locked.length).toBe(sim.net.segments.size);
+    sim.bulldoze(locked.map((s) => s.id));
+    expect(sim.net.segments.size).toBe(locked.length);
+  });
+
+  it('only grows where the roads reach the highway, and newcomers drive in from outside', () => {
+    const sim = townAwayFromHighway();
+    runUntil(sim, 2);
+    expect(sim.buildings.count).toBe(0);
+    expect(sim.stats({ tickMs: 0, ticksPerSec: 0, effectiveSpeed: 0 }).unconnectedLots).toBeGreaterThan(0);
+
+    // Anslut stadens södra gata till mittenavfarten
+    const exit = sim.net.node(sim.net.exits[1]);
+    const result = sim.buildRoads([[straight(exit.x, exit.z, 2044, 2188)]], RoadType.Avenue);
+    expect(result.built).toBe(1);
+
+    let peakMovingIn = 0;
+    let peakOnRoad = 0;
+    runUntil(sim, 4, () => {
+      peakMovingIn = Math.max(peakMovingIn, sim.people.stateCount[CitizenState.MovingIn]);
+      peakOnRoad = Math.max(peakOnRoad, sim.traffic.onRoad);
+    });
+    expect(sim.buildings.count).toBeGreaterThan(20);
+    expect(peakMovingIn).toBeGreaterThan(0);
+    expect(peakOnRoad).toBeGreaterThan(0);
+    checkInvariants(sim);
+
+    // När tillväxten stannat av har alla hunnit fram (att ta bort zonerna river byggnaderna,
+    // så stoppa i stället tillväxten genom att inte lämna några lediga tomter kvar)
+    sim.growAll();
+    runUntil(sim, 6);
+    expect(sim.people.stateCount[CitizenState.MovingIn]).toBe(0);
   });
 });

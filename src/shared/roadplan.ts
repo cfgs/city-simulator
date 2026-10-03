@@ -11,7 +11,7 @@ import {
   type Polyline,
   type Quad,
 } from './geometry';
-import { ROAD_SPECS, type RoadNetwork, type RoadType } from './network';
+import { MAX_HALF_WIDTH, ROAD_SPECS, RoadType, type RoadNetwork, type RoadSegment } from './network';
 
 /**
  * Vägplaneraren: tar en önskad väg (en eller flera sammanhängande kurvor) och räknar ut
@@ -66,11 +66,14 @@ export interface NetworkChange {
   removed: number[];
 }
 
+/** Motorvägen går bara att ansluta till via avfarterna, så den fäster man aldrig mot. */
+const connectable = (seg: RoadSegment) => seg.type !== RoadType.Highway;
+
 /** Fäster en punkt mot befintlig korsning, befintlig väg eller (valfritt) rutnätet. */
 export function snapPoint(net: RoadNetwork, x: number, z: number, grid: boolean): Snapped {
-  const node = net.nearestNode(x, z, SNAP_NODE);
+  const node = net.nearestNode(x, z, SNAP_NODE, connectable);
   if (node) return { x: node.x, z: node.z, ref: { kind: 'node', node: node.id } };
-  const hit = net.nearestSegment(x, z, SNAP_SEGMENT);
+  const hit = net.nearestSegment(x, z, SNAP_SEGMENT, connectable);
   if (hit) {
     const seg = net.segments.get(hit.seg)!;
     if (hit.s < MIN_SEGMENT) return nodeSnap(net, seg.a);
@@ -136,6 +139,7 @@ export function planRoad(net: RoadNetwork, input: Quad[], type: RoadType): RoadP
     for (const segId of net.segmentsNear(poly.minX - 1, poly.minZ - 1, poly.maxX + 1, poly.maxZ + 1)) {
       const seg = net.segments.get(segId)!;
       for (const hit of crossings(poly, seg.poly)) {
+        if (!connectable(seg)) return fail('Motorvägen kan inte korsas – anslut via en avfart');
         // Träffar precis vid våra ändpunkter är redan hanterade av fästningen.
         if (touchesEnd(hit, stops[0], seg) || touchesEnd(hit, stops[1], seg)) continue;
         // ... och träffar runt en korsning vi passerar genom ersätts av korsningen.
@@ -287,10 +291,12 @@ function passedJunctions(net: RoadNetwork, poly: Polyline, ends: PlanStop[]): { 
   const seen = new Set<number>();
   for (const segId of net.segmentsNear(poly.minX - MIN_SEGMENT, poly.minZ - MIN_SEGMENT, poly.maxX + MIN_SEGMENT, poly.maxZ + MIN_SEGMENT)) {
     const seg = net.segments.get(segId)!;
+    if (!connectable(seg)) continue;
     for (const id of [seg.a, seg.b]) {
       if (seen.has(id)) continue;
       seen.add(id);
       const n = net.node(id);
+      if (n.segs.some((s) => !connectable(net.segments.get(s)!))) continue;
       if (ends.some((e) => (e.ref.kind === 'node' && e.ref.node === id) || Math.hypot(e.x - n.x, e.z - n.z) < 2 * MIN_SEGMENT)) continue;
       const hit = closestPoint(poly, n.x, n.z);
       if (hit.dist < MIN_SEGMENT) out.push({ node: id, t: hit.t, x: n.x, z: n.z });
@@ -393,8 +399,10 @@ function existingDirections(net: RoadNetwork, stop: PlanStop): Point[] {
 
 /** Vägen får inte gå parallellt med eller tätt intill en annan väg utanför korsningarna. */
 function tooCloseToOtherRoads(net: RoadNetwork, pieces: Piece[], halfWidth: number): boolean {
-  const stops = pieces.flatMap((p) => [p.from, p.to]);
-  const reach = halfWidth + ROAD_SPECS[ROAD_SPECS.length - 1].halfWidth + 1;
+  // Bara riktiga korsningar får ha andra vägar nära inpå sig – en fri vägände får inte
+  // hamna ovanpå en annan väg.
+  const stops = pieces.flatMap((p) => [p.from, p.to]).filter((s) => s.ref.kind !== 'new');
+  const reach = halfWidth + MAX_HALF_WIDTH + 1;
   for (const { poly } of pieces) {
     const n = Math.max(1, Math.ceil(poly.length / 3));
     for (let i = 0; i <= n; i++) {

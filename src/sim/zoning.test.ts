@@ -6,7 +6,7 @@ import { CELL, DEPTH, ZoneType } from '../shared/zones';
 import { Simulation } from './sim';
 
 function newSim() {
-  return new Simulation({ ...DEFAULT_CONFIG, mapSize: 2000 });
+  return new Simulation({ ...DEFAULT_CONFIG, mapSize: 2000, outsideConnection: false });
 }
 
 function cellsOf(sim: Simulation, segId: number) {

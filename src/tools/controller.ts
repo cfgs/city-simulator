@@ -187,7 +187,7 @@ export class ToolController {
   private drag(p: Point): void {
     if (this.tool === 'bulldoze') {
       const hit = this.net.nearestSegment(p.x, p.z, 10);
-      if (hit && !this.bulldozed.has(hit.seg)) {
+      if (hit && !this.net.segments.get(hit.seg)!.locked && !this.bulldozed.has(hit.seg)) {
         this.bulldozed.add(hit.seg);
         this.send({ type: 'bulldoze', segments: [hit.seg] });
       }
@@ -293,6 +293,11 @@ export class ToolController {
   private previewBulldoze(p: Point): void {
     const hit = this.net.nearestSegment(p.x, p.z, 10);
     const seg = hit ? this.net.segments.get(hit.seg)! : null;
+    if (seg?.locked) {
+      this.preview.showSegment(null);
+      this.ui.tip('Motorvägen och avfarterna kan inte rivas', true, this.screen.x, this.screen.y);
+      return;
+    }
     this.preview.showSegment(seg);
     this.ui.tip(seg ? 'Riv vägen' : null, false, this.screen.x, this.screen.y);
   }

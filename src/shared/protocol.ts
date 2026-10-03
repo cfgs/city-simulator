@@ -59,6 +59,10 @@ export interface SimStats {
   unemployed: number;
   atHome: number;
   atWork: number;
+  /** På väg in till staden för att flytta in. */
+  movingIn: number;
+  /** Zonade tomter som inte kan få byggnader eftersom vägarna inte når motorvägen. */
+  unconnectedLots: number;
   onRoad: number;
   waitingToEnter: number;
   inTransit: number;

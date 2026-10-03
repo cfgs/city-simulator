@@ -2,7 +2,7 @@ import { closestPoint, pointAt, sampleQuad, subQuad, type ClosestPoint, type Pol
 
 export const LANE_WIDTH = 3.5;
 
-export const RoadType = { Street: 0, Avenue: 1 } as const;
+export const RoadType = { Street: 0, Avenue: 1, Highway: 2 } as const;
 export type RoadType = (typeof RoadType)[keyof typeof RoadType];
 
 export interface RoadSpec {
@@ -18,7 +18,11 @@ export interface RoadSpec {
 export const ROAD_SPECS: readonly RoadSpec[] = [
   { lanes: 1, speed: 40 / 3.6, halfWidth: LANE_WIDTH, label: 'Gata' },
   { lanes: 2, speed: 60 / 3.6, halfWidth: 2 * LANE_WIDTH, label: 'Huvudled' },
+  { lanes: 3, speed: 100 / 3.6, halfWidth: 3 * LANE_WIDTH, label: 'Motorväg' },
 ];
+
+/** Bredaste vägtypen, för sökningar som måste nå alla vägar. */
+export const MAX_HALF_WIDTH = Math.max(...ROAD_SPECS.map((s) => s.halfWidth));
 
 export interface RoadNode {
   readonly id: number;
@@ -36,7 +40,15 @@ export interface RoadSegment {
   type: RoadType;
   /** Byggordning. Delade vägar behåller sitt ursprungliga nummer (styr zonprioritet). */
   seq: number;
+  /** Låsta vägar (motorvägen och avfarterna) kan inte rivas. */
+  locked: boolean;
   poly: Polyline;
+}
+
+export interface SegmentOptions {
+  seq?: number;
+  id?: number;
+  locked?: boolean;
 }
 
 /** Vägnätet i ett format som kan skickas mellan trådar. */
@@ -53,6 +65,9 @@ export interface NetworkData {
   segCZ: Float32Array;
   segType: Uint8Array;
   segSeq: Int32Array;
+  segLocked: Uint8Array;
+  exits: Int32Array;
+  outside: Int32Array;
 }
 
 export interface SegmentHit extends ClosestPoint {
@@ -70,6 +85,10 @@ export class RoadNetwork {
   readonly nodes = new Map<number, RoadNode>();
   readonly segments = new Map<number, RoadSegment>();
   version = 0;
+  /** Avfarternas yttersta korsningar – där spelaren ansluter sina vägar till motorvägen. */
+  exits: number[] = [];
+  /** Motorvägens ändar utanför kartan – förbindelsen med omvärlden. */
+  outside: number[] = [];
   private nextNodeId = 0;
   private nextSegId = 0;
   private nextSeq = 0;
@@ -85,13 +104,14 @@ export class RoadNetwork {
   }
 
   /** Lägger till en vägsträcka. Kurvans ändpunkter sätts alltid till nodernas positioner. */
-  addSegment(a: number, b: number, curve: Quad, type: RoadType, seq = this.nextSeq, id = this.nextSegId): number {
+  addSegment(a: number, b: number, curve: Quad, type: RoadType, options: SegmentOptions = {}): number {
+    const { seq = this.nextSeq, id = this.nextSegId, locked = false } = options;
     const na = this.node(a);
     const nb = this.node(b);
     const c: Quad = { ax: na.x, az: na.z, cx: curve.cx, cz: curve.cz, bx: nb.x, bz: nb.z };
     this.nextSegId = Math.max(this.nextSegId, id + 1);
     this.nextSeq = Math.max(this.nextSeq, seq + 1);
-    const seg: RoadSegment = { id, a, b, curve: c, type, seq, poly: sampleQuad(c) };
+    const seg: RoadSegment = { id, a, b, curve: c, type, seq, locked, poly: sampleQuad(c) };
     this.segments.set(id, seg);
     na.segs.push(id);
     nb.segs.push(id);
@@ -129,7 +149,7 @@ export class RoadNetwork {
     const chain = [seg.a, ...nodeIds, seg.b];
     const params = [0, ...ts, 1];
     for (let i = 0; i + 1 < chain.length; i++) {
-      this.addSegment(chain[i], chain[i + 1], subQuad(seg.curve, params[i], params[i + 1]), seg.type, seg.seq);
+      this.addSegment(chain[i], chain[i + 1], subQuad(seg.curve, params[i], params[i + 1]), seg.type, { seq: seg.seq, locked: seg.locked });
     }
     this.removeSegment(id);
     return nodeIds;
@@ -171,13 +191,16 @@ export class RoadNetwork {
     return [...out];
   }
 
-  nearestNode(x: number, z: number, radius: number): RoadNode | null {
+  /** Närmaste korsning inom radien. `accept` kan utesluta vägar (och deras korsningar). */
+  nearestNode(x: number, z: number, radius: number, accept: (seg: RoadSegment) => boolean = () => true): RoadNode | null {
     let best: RoadNode | null = null;
     let bestDist = radius;
     for (const s of this.segmentsNear(x - radius, z - radius, x + radius, z + radius)) {
       const seg = this.segments.get(s)!;
+      if (!accept(seg)) continue;
       for (const n of [seg.a, seg.b]) {
         const node = this.nodes.get(n)!;
+        if (node.segs.some((id) => !accept(this.segments.get(id)!))) continue;
         const d = Math.hypot(node.x - x, node.z - z);
         if (d <= bestDist) {
           bestDist = d;
@@ -188,9 +211,10 @@ export class RoadNetwork {
     return best;
   }
 
-  nearestSegment(x: number, z: number, radius: number): SegmentHit | null {
+  nearestSegment(x: number, z: number, radius: number, accept: (seg: RoadSegment) => boolean = () => true): SegmentHit | null {
     let best: SegmentHit | null = null;
     for (const s of this.segmentsNear(x - radius, z - radius, x + radius, z + radius)) {
+      if (!accept(this.segments.get(s)!)) continue;
       const hit = closestPoint(this.segments.get(s)!.poly, x, z);
       if (hit.dist <= radius && (!best || hit.dist < best.dist)) best = { ...hit, seg: s };
     }
@@ -213,6 +237,9 @@ export class RoadNetwork {
       segCZ: Float32Array.from(segs, (s) => s.curve.cz),
       segType: Uint8Array.from(segs, (s) => s.type),
       segSeq: Int32Array.from(segs, (s) => s.seq),
+      segLocked: Uint8Array.from(segs, (s) => (s.locked ? 1 : 0)),
+      exits: Int32Array.from(this.exits),
+      outside: Int32Array.from(this.outside),
     };
   }
 
@@ -221,8 +248,10 @@ export class RoadNetwork {
     for (let i = 0; i < d.nodeIds.length; i++) net.addNode(d.nodeX[i], d.nodeZ[i], d.nodeIds[i]);
     for (let i = 0; i < d.segIds.length; i++) {
       const curve: Quad = { ax: 0, az: 0, cx: d.segCX[i], cz: d.segCZ[i], bx: 0, bz: 0 };
-      net.addSegment(d.segA[i], d.segB[i], curve, d.segType[i] as RoadType, d.segSeq[i], d.segIds[i]);
+      net.addSegment(d.segA[i], d.segB[i], curve, d.segType[i] as RoadType, { seq: d.segSeq[i], id: d.segIds[i], locked: d.segLocked[i] === 1 });
     }
+    net.exits = [...d.exits];
+    net.outside = [...d.outside];
     net.version = d.version;
     return net;
   }

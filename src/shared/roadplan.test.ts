@@ -122,3 +122,34 @@ describe('planRoad / applyPlan', () => {
     expect(net.nearestNode(172, 172, 1)!.segs).toHaveLength(4);
   });
 });
+
+describe('motorvägen', () => {
+  function withHighway() {
+    const net = new RoadNetwork(1000);
+    const a = net.addNode(-100, 800);
+    const b = net.addNode(1100, 800);
+    net.addSegment(a, b, straight(-100, 800, 1100, 800), RoadType.Highway, { locked: true });
+    const [j] = net.splitSegment([...net.segments.keys()][0], [0.5]);
+    const end = net.addNode(500, 710);
+    net.addSegment(j, end, straight(500, 800, 500, 710), RoadType.Avenue, { locked: true });
+    net.exits.push(end);
+    return { net, exit: net.node(end) };
+  }
+
+  it('cannot be crossed', () => {
+    const { net } = withHighway();
+    expect(planRoad(net, [straight(300, 600, 300, 950)], RoadType.Street).reason).toMatch(/Motorvägen/);
+  });
+
+  it('cannot be connected to except at an exit', () => {
+    const { net } = withHighway();
+    expect(planRoad(net, [straight(300, 600, 300, 798)], RoadType.Street).valid).toBe(false);
+  });
+
+  it('connects at an exit', () => {
+    const { net, exit } = withHighway();
+    const plan = build(net, [straight(300, 600, exit.x, exit.z)]);
+    expect(plan.valid).toBe(true);
+    expect(net.node(net.exits[0]).segs).toHaveLength(2);
+  });
+});

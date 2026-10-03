@@ -92,7 +92,7 @@ export class Hud {
       row('Invånare', fmt(stats.population), `bilägare ${fmt(stats.drivers)}`),
       row('Jobb', fmt(stats.jobs), `${fmt(openJobs)} lediga · ${fmt(stats.unemployed)} arbetslösa`),
       row('Byggnader', fmt(stats.buildings)),
-      row('Hemma', fmt(stats.atHome), `på jobbet ${fmt(stats.atWork)}`),
+      row('Hemma', fmt(stats.atHome), `på jobbet ${fmt(stats.atWork)} · flyttar in ${fmt(stats.movingIn)}`),
       row('Bilar på väg', fmt(stats.onRoad), stats.waitingToEnter > 0 ? `+${fmt(stats.waitingToEnter)} väntar` : ''),
       row('Kollektivt', fmt(stats.inTransit)),
       row('Restid bil', `${dec(stats.avgCarTripMin)} min`),

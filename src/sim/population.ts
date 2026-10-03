@@ -1,4 +1,5 @@
-export const CitizenState = { Home: 0, ToWork: 1, Work: 2, ToHome: 3 } as const;
+/** MovingIn = på väg in till staden från omvärlden för att flytta in. */
+export const CitizenState = { Home: 0, ToWork: 1, Work: 2, ToHome: 3, MovingIn: 4 } as const;
 export type CitizenState = (typeof CitizenState)[keyof typeof CitizenState];
 
 export const Travel = { None: 0, Car: 1, Transit: 2 } as const;
@@ -27,7 +28,7 @@ export class Population {
   slots = 0;
   count = 0;
   drivers = 0;
-  readonly stateCount = new Int32Array(4);
+  readonly stateCount = new Int32Array(5);
   readonly unemployed = new Set<number>();
   private released: number[] = [];
   private releasedAt: number[] = [];
